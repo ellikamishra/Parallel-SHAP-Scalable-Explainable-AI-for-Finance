@@ -6,6 +6,10 @@ This repository contains:
 - A CUDA demo kernel for SHAP with a linear head (pybind11 + CMake).
 - A FastAPI dashboard to run benchmarks and visualize speedups.
 
+## Sample Dashboard Run (OpenMP)
+
+![OpenMP benchmark dashboard](image.png)
+
 ## Quickstart
 
 ```bash

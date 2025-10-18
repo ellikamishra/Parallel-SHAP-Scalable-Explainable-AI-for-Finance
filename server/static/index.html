@@ -4,14 +4,18 @@
   <meta charset="utf-8" />
   <title>Parallel-SHAP Bench</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; }
     label { display:block; margin-top:8px; }
     input, select { padding:6px; }
     .row { display:flex; gap:20px; align-items:flex-end; flex-wrap: wrap; }
-    table { border-collapse: collapse; width:100%; margin-top:16px;}
-    th, td { padding:8px; border-bottom:1px solid #eee; }
-    #chart { margin-top: 16px; border: 1px solid #ddd; height: 320px; }
+    table { border-collapse: collapse; width:100%; margin-top:16px; font-size: 15px;}
+    th, td { padding:8px; border-bottom:1px solid #eee; text-align:left; }
+    th { background:#f6f6f6; }
+    #chart-wrapper { margin-top: 20px; }
+    #chart-wrapper canvas { max-width: 100%; }
+    .text-muted { color:#777; font-style:italic; }
   </style>
 </head>
 <body>
@@ -35,8 +39,129 @@
   </form>
   <div id="msg" style="margin-top:8px;color:#0a0">Submit a run above to queue it.</div>
 
-  <h2>Runs (auto-refresh)</h2>
-  <div hx-get="/runs" hx-trigger="load, every 2s" hx-target="#runs" hx-swap="innerHTML"></div>
-  <pre id="runs" style="background:#fafafa; padding:12px; border:1px solid #eee; overflow:auto; max-height:300px"></pre>
+  <h2>Recent Runs (auto-refresh)</h2>
+  <div id="chart-wrapper">
+    <canvas id="runtimeChart" height="160"></canvas>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Label</th>
+        <th>Backend</th>
+        <th>Runtime (s)</th>
+        <th>Speedup vs Py</th>
+        <th>Fidelity</th>
+        <th>Params</th>
+        <th>Created</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody id="runs-body">
+      <tr><td colspan="9" class="text-muted">No runs yet.</td></tr>
+    </tbody>
+  </table>
+
+  <script>
+    const runsBody = document.getElementById("runs-body");
+    const chartCtx = document.getElementById("runtimeChart").getContext("2d");
+
+    const runtimeChart = new Chart(chartCtx, {
+      type: "bar",
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: "Runtime (s)",
+            data: [],
+            backgroundColor: "#4f86f7"
+          },
+          {
+            label: "Speedup vs Baseline",
+            data: [],
+            type: "line",
+            yAxisID: "speedup",
+            borderColor: "#f05a28",
+            backgroundColor: "rgba(240,90,40,0.15)",
+            tension: 0.3,
+            spanGaps: true
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: { display: true, text: "Runtime (s)" }
+          },
+          speedup: {
+            position: "right",
+            beginAtZero: true,
+            title: { display: true, text: "Speedup" },
+            grid: { drawOnChartArea: false }
+          }
+        },
+        plugins: {
+          legend: { position: "bottom" }
+        }
+      }
+    });
+
+    function formatNumber(value, decimals = 3) {
+      if (value === null || value === undefined) return "–";
+      return Number(value).toFixed(decimals);
+    }
+
+    function formatParams(params) {
+      if (!params) return "–";
+      const parts = [];
+      if (params.P !== undefined && params.P !== null) parts.push(`P=${params.P}`);
+      if (params.threads !== undefined && params.threads !== null) parts.push(`threads=${params.threads}`);
+      if (params.N !== undefined && params.N !== null) parts.push(`N=${params.N}`);
+      return parts.length ? parts.join(", ") : "–";
+    }
+
+    async function refreshRuns() {
+      try {
+        const resp = await fetch("/runs", { headers: { "HX-Request": "true" } });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const rows = await resp.json();
+        if (!Array.isArray(rows)) throw new Error("Unexpected runs payload");
+
+        if (rows.length === 0) {
+          runsBody.innerHTML = '<tr><td colspan="9" class="text-muted">No runs yet.</td></tr>';
+        } else {
+          const sorted = [...rows].sort((a, b) => b.id - a.id);
+          runsBody.innerHTML = sorted.map(run => `
+            <tr>
+              <td>${run.id}</td>
+              <td>${run.label}</td>
+              <td>${run.backend}</td>
+              <td>${formatNumber(run.runtime_sec)}</td>
+              <td>${formatNumber(run.speedup_vs_baseline)}</td>
+              <td>${run.fidelity_corr === null || run.fidelity_corr === undefined ? "–" : run.fidelity_corr.toFixed(4)}</td>
+              <td>${formatParams(run.params)}</td>
+              <td>${run.created_at ? run.created_at.replace("T", " ").split(".")[0] : "–"}</td>
+              <td>${run.notes ?? "–"}</td>
+            </tr>
+          `).join("");
+
+          const latest = sorted.slice(0, 8).reverse();
+          runtimeChart.data.labels = latest.map(run => run.label);
+          runtimeChart.data.datasets[0].data = latest.map(run => run.runtime_sec ?? 0);
+          runtimeChart.data.datasets[1].data = latest.map(run => run.speedup_vs_baseline);
+          runtimeChart.update();
+        }
+      } catch (err) {
+        runsBody.innerHTML = `<tr><td colspan="9" class="text-muted">Failed to load runs: ${err}</td></tr>`;
+      }
+    }
+
+    refreshRuns();
+    setInterval(refreshRuns, 2000);
+  </script>
 </body>
 </html>
