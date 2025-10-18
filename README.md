@@ -1,4 +1,4 @@
-# Parallel-SHAP (OpenMP + CUDA) — Full-Stack HPC Project
+# Parallel-SHAP (OpenMP + CUDA)\
 
 This repository contains:
 - A model-agnostic Monte-Carlo SHAP implementation (Python).
@@ -33,4 +33,4 @@ uvicorn app:app --reload
 ```
 
 
-**Note:** A pre-trained `models/model.pkl` is included so you can run benchmarks and the dashboard immediately.
+**Note:** A pre-trained `models/model.pkl` is included.
