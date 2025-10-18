@@ -1,4 +1,4 @@
-# Parallel-SHAP (OpenMP + CUDA)\
+# Parallel-SHAP (OpenMP + CUDA)
 
 This repository contains:
 - A model-agnostic Monte-Carlo SHAP implementation (Python).
