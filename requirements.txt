@@ -1,0 +1,13 @@
+numpy
+pandas
+scikit-learn
+xgboost
+shap
+pybind11
+matplotlib
+joblib
+fastapi
+uvicorn
+sqlmodel
+pydantic
+psutil

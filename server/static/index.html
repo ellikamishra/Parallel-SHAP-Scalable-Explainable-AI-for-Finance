@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Parallel-SHAP Bench</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    label { display:block; margin-top:8px; }
+    input, select { padding:6px; }
+    .row { display:flex; gap:20px; align-items:flex-end; flex-wrap: wrap; }
+    table { border-collapse: collapse; width:100%; margin-top:16px;}
+    th, td { padding:8px; border-bottom:1px solid #eee; }
+    #chart { margin-top: 16px; border: 1px solid #ddd; height: 320px; }
+  </style>
+</head>
+<body>
+  <h1>Parallel-SHAP Benchmark</h1>
+
+  <form id="bench" hx-post="/benchmark" hx-trigger="submit" hx-target="#msg" hx-swap="innerHTML">
+    <div class="row">
+      <label>Label <input name="label" required placeholder="baseline-64P"/></label>
+      <label>Backend
+        <select name="backend">
+          <option value="python">python</option>
+          <option value="openmp">openmp</option>
+        </select>
+      </label>
+      <label>P (permutations) <input type="number" name="P" value="64"/></label>
+      <label>Threads (OpenMP) <input type="number" name="threads" placeholder="e.g., 16"/></label>
+      <label>N samples <input type="number" name="N" placeholder="e.g., 2000"/></label>
+      <label>Dataset <input name="dataset_name" value="market_features.csv"/></label>
+      <button type="submit">Run</button>
+    </div>
+  </form>
+  <div id="msg" style="margin-top:8px;color:#0a0">Submit a run above to queue it.</div>
+
+  <h2>Runs (auto-refresh)</h2>
+  <div hx-get="/runs" hx-trigger="load, every 2s" hx-target="#runs" hx-swap="innerHTML"></div>
+  <pre id="runs" style="background:#fafafa; padding:12px; border:1px solid #eee; overflow:auto; max-height:300px"></pre>
+</body>
+</html>
