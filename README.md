@@ -4,6 +4,7 @@ This repository contains:
 - A model-agnostic Monte-Carlo SHAP implementation (Python).
 - An OpenMP-accelerated SHAP module (pybind11 + CMake).
 - A CUDA demo kernel for SHAP with a linear head (pybind11 + CMake).
+- RandomForestClassifier trained on the included dataset
 - A FastAPI dashboard to run benchmarks and visualize speedups.
 
 ## Sample Dashboard Run (OpenMP)
