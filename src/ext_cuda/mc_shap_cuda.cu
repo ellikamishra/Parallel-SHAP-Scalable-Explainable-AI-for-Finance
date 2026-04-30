@@ -7,6 +7,22 @@
 namespace py = pybind11;
 __device__ inline double sigmoid(double z){ return 1.0 / (1.0 + exp(-z)); }
 
+// Provide a portable atomicAdd for double for architectures where it is not built-in
+__device__ inline double atomicAdd_double(double* address, double val){
+#if __CUDA_ARCH__ >= 600
+    return atomicAdd(address, val);
+#else
+    unsigned long long int* address_as_ull = reinterpret_cast<unsigned long long int*>(address);
+    unsigned long long int old = *address_as_ull, assumed;
+    do {
+        assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        __double_as_longlong(val + __longlong_as_double(assumed)));
+    } while (assumed != old);
+    return __longlong_as_double(old);
+#endif
+}
+
 __global__ void mc_shap_linear_kernel(
     const double* __restrict__ X,
     const double* __restrict__ baseline,
@@ -37,7 +53,7 @@ __global__ void mc_shap_linear_kernel(
         __shared__ double red;
         if (threadIdx.x == 0) red = 0.0;
         __syncthreads();
-        atomicAdd(&red, z0);
+        atomicAdd_double(&red, z0);
         __syncthreads();
         double prev = 1.0 / (1.0 + exp(-(red + b)));
         __syncthreads();
@@ -52,12 +68,12 @@ __global__ void mc_shap_linear_kernel(
             __syncthreads();
             if (threadIdx.x == 0) red = 0.0;
             __syncthreads();
-            atomicAdd(&red, z);
+            atomicAdd_double(&red, z);
             __syncthreads();
             double cur = 1.0 / (1.0 + exp(-(red + b)));
             __syncthreads();
 
-            if (threadIdx.x == 0) atomicAdd(&out[i*D + feat], (cur - prev) / double(P));
+            if (threadIdx.x == 0) atomicAdd_double(&out[i*D + feat], (cur - prev) / double(P));
             prev = cur;
             __syncthreads();
         }

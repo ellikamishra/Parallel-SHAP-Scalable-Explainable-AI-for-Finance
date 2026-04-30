@@ -14,6 +14,14 @@ def try_import_openmp():
     except Exception:
         return None
 
+def try_import_cuda():
+    try:
+        sys.path.append(str(ROOT / "src" / "ext_cuda" / "build"))
+        from mc_shap_cuda import mc_shap_cuda_linear
+        return mc_shap_cuda_linear
+    except Exception:
+        return None
+
 def load_data_and_model(dataset_name="market_features.csv"):
     data = pd.read_csv(ROOT / "data" / dataset_name)
     obj = joblib.load(ROOT / "models" / "model.pkl")
@@ -46,27 +54,87 @@ def run_benchmark(backend: str, P: int, N: int|None, threads: int|None, dataset_
     def f_model(Xin):
         return model.predict_proba(Xin)[:, 1]
 
+    # Get Python baseline timing for speedup calculation
+    # Only run this once with Python backend
+    if backend == "python":
+        t0 = time.time()
+        phi_py = mc_shap_batch(f_model, X, X_bg, P=P, seed=0)
+        t1 = time.time()
+        rt = t1 - t0
+        
+        # No baseline comparison for Python - it IS the baseline
+        return rt, 1.0, 1.0000  # speedup=1x, fidelity=1.0 (perfect)
+
+    # For other backends, we need Python baseline for comparison
+    print(f"Running Python baseline for comparison...")
     t0 = time.time()
     phi_py = mc_shap_batch(f_model, X, X_bg, P=P, seed=0)
     t1 = time.time()
-    base_time = t1 - t0
+    baseline_time = t1 - t0
+    print(f"Python baseline: {baseline_time:.4f}s")
 
-    if backend == "python":
-        return base_time, 1.0, 1.0
-
-    elif backend == "openmp":
+    if backend == "openmp":
         omp = try_import_openmp()
         if omp is None:
             raise RuntimeError("OpenMP extension not found. Build src/ext_openmp first.")
-        if threads: os.environ["OMP_NUM_THREADS"] = str(threads)
+        if threads: 
+            os.environ["OMP_NUM_THREADS"] = str(threads)
+        
+        # Check if fast version exists
+        has_fast = hasattr(omp, 'mc_shap_openmp_fast')
+        
+        print(f"Running OpenMP ({'fast' if has_fast else 'slow'} version)...")
         t0 = time.time()
-        phi_omp = omp.mc_shap_openmp(f_model, X, X_bg, P, 0)
+        if has_fast:
+            phi_omp = omp.mc_shap_openmp_fast(f_model, X, X_bg, P, 0)
+        else:
+            # Warn about slow version
+            print("WARNING: Using slow OpenMP version with GIL overhead!")
+            print("This will likely be slower than Python baseline.")
+            phi_omp = omp.mc_shap_openmp(f_model, X, X_bg, P, 0)
         t1 = time.time()
+        rt = t1 - t0
+        
         corr = float(np.corrcoef(phi_py.ravel(), phi_omp.ravel())[0,1])
-        return (t1 - t0), base_time / (t1 - t0 + 1e-12), corr
+        speedup = baseline_time / (rt + 1e-12)
+        
+        return rt, speedup, corr
 
     elif backend == "cuda":
-        raise NotImplementedError("CUDA fastpath not wired in server benchmark.")
+        mc_shap_cuda_linear = try_import_cuda()
+        if mc_shap_cuda_linear is None:
+            raise RuntimeError("CUDA extension not found. Build src/ext_cuda first.")
+
+        if y is None:
+            raise RuntimeError("CUDA backend requires labels to fit a linear surrogate model.")
+
+        from sklearn.linear_model import LogisticRegression
+        print("Training linear model for CUDA...")
+        lr = LogisticRegression(max_iter=1000).fit(X, y)
+        baseline = X_bg.mean(axis=0).astype(np.float64)
+        W = lr.coef_.ravel().astype(np.float64)
+        b = float(lr.intercept_[0])
+
+        print("Running CUDA kernel...")
+        t0 = time.time()
+        phi_cuda = mc_shap_cuda_linear(
+            X.astype(np.float64),
+            baseline,
+            W,
+            b,
+            P,
+            128,
+            0
+        )
+        t1 = time.time()
+        rt = t1 - t0
+        
+        # Note: CUDA uses different model, so fidelity is vs Python MC-SHAP with tree model
+        # This is not a perfect comparison but gives a sense of consistency
+        corr = float(np.corrcoef(phi_py.ravel(), phi_cuda.ravel())[0,1])
+        speedup = baseline_time / (rt + 1e-12)
+        
+        return rt, speedup, corr
 
     else:
         raise ValueError("backend must be: python | openmp | cuda")

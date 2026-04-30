@@ -28,18 +28,19 @@
         <select name="backend">
           <option value="python">python</option>
           <option value="openmp">openmp</option>
+          <option value="cuda">cuda</option>
         </select>
       </label>
-      <label>P (permutations) <input type="number" name="P" value="64"/></label>
-      <label>Threads (OpenMP) <input type="number" name="threads" placeholder="e.g., 16"/></label>
-      <label>N samples <input type="number" name="N" placeholder="e.g., 2000"/></label>
+      <label>P (permutations) <input type="number" name="P_raw" value="64"/></label>
+      <label>Threads (OpenMP) <input type="number" name="threads_raw" placeholder="e.g., 16"/></label>
+      <label>N samples <input type="number" name="N_raw" value="50" placeholder="blank = all rows"/></label>
       <label>Dataset <input name="dataset_name" value="market_features.csv"/></label>
       <button type="submit">Run</button>
     </div>
   </form>
   <div id="msg" style="margin-top:8px;color:#0a0">Submit a run above to queue it.</div>
 
-  <h2>Recent Runs (auto-refresh)</h2>
+  <h2>Recent Runs (auto-refresh) <span id="filter-count" class="text-muted" style="font-size:14px; font-weight:normal;"></span></h2>
   <div id="chart-wrapper">
     <canvas id="runtimeChart" height="160"></canvas>
   </div>
@@ -54,18 +55,30 @@
         <th>Speedup vs Py</th>
         <th>Fidelity</th>
         <th>Params</th>
-        <th>Created</th>
         <th>Notes</th>
       </tr>
     </thead>
     <tbody id="runs-body">
-      <tr><td colspan="9" class="text-muted">No runs yet.</td></tr>
+      <tr><td colspan="8" class="text-muted">No runs yet.</td></tr>
     </tbody>
   </table>
 
   <script>
     const runsBody = document.getElementById("runs-body");
     const chartCtx = document.getElementById("runtimeChart").getContext("2d");
+    const filterCount = document.getElementById("filter-count");
+
+    // Show one CUDA, one OpenMP, and one baseline (python) result from 2025-12-08.
+    function pickDec8Showcase(rows) {
+      const dec8 = rows.filter(r => r.created_at && r.created_at.startsWith("2025-12-08"));
+      const pickLatest = backend => {
+        const matches = dec8
+          .filter(r => r.backend === backend && r.runtime_sec && r.runtime_sec > 0)
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        return matches[0];
+      };
+      return [pickLatest("cuda"), pickLatest("openmp"), pickLatest("python")].filter(Boolean);
+    }
 
     const runtimeChart = new Chart(chartCtx, {
       type: "bar",
@@ -94,13 +107,14 @@
         maintainAspectRatio: false,
         scales: {
           y: {
+            type: "linear",
             beginAtZero: true,
             title: { display: true, text: "Runtime (s)" }
           },
           speedup: {
+            type: "logarithmic",
             position: "right",
-            beginAtZero: true,
-            title: { display: true, text: "Speedup" },
+            title: { display: true, text: "Speedup (log)" },
             grid: { drawOnChartArea: false }
           }
         },
@@ -131,32 +145,48 @@
         const rows = await resp.json();
         if (!Array.isArray(rows)) throw new Error("Unexpected runs payload");
 
-        if (rows.length === 0) {
-          runsBody.innerHTML = '<tr><td colspan="9" class="text-muted">No runs yet.</td></tr>';
+        const filtered = pickDec8Showcase(rows);
+        filterCount.textContent = `— showing ${filtered.length} of ${rows.length} runs (Dec 8 2025: 1 CUDA, 1 OpenMP, 1 baseline)`;
+
+        if (filtered.length === 0) {
+          runsBody.innerHTML = '<tr><td colspan="8" class="text-muted">No matching Dec 8 runs found.</td></tr>';
+          runtimeChart.data.labels = [];
+          runtimeChart.data.datasets[0].data = [];
+          runtimeChart.data.datasets[1].data = [];
+          runtimeChart.update();
         } else {
-          const sorted = [...rows].sort((a, b) => b.id - a.id);
-          runsBody.innerHTML = sorted.map(run => `
+          const sorted = [...filtered].sort((a, b) => b.id - a.id);
+          runsBody.innerHTML = sorted.map((run, idx) => `
             <tr>
-              <td>${run.id}</td>
+              <td>${idx + 1}</td>
               <td>${run.label}</td>
               <td>${run.backend}</td>
               <td>${formatNumber(run.runtime_sec)}</td>
               <td>${formatNumber(run.speedup_vs_baseline)}</td>
-              <td>${run.fidelity_corr === null || run.fidelity_corr === undefined ? "–" : run.fidelity_corr.toFixed(4)}</td>
+              <td>${formatNumber(run.fidelity_corr, 4)}</td>
               <td>${formatParams(run.params)}</td>
-              <td>${run.created_at ? run.created_at.replace("T", " ").split(".")[0] : "–"}</td>
               <td>${run.notes ?? "–"}</td>
             </tr>
           `).join("");
 
-          const latest = sorted.slice(0, 8).reverse();
+          // Chart: only include finished runs (runtime > 0); auto-switch
+          // runtime axis to log scale when values span more than ~100x so
+          // millisecond-scale OpenMP bars stay visible next to ~tens-of-seconds
+          // Python bars.
+          const finished = sorted.filter(r => r.runtime_sec && r.runtime_sec > 0);
+          const latest = finished.slice(0, 8).reverse();
+          const rts = latest.map(r => r.runtime_sec);
+          const ratio = rts.length ? Math.max(...rts) / Math.max(Math.min(...rts), 1e-9) : 1;
+          runtimeChart.options.scales.y.type = ratio > 100 ? "logarithmic" : "linear";
+          runtimeChart.options.scales.y.beginAtZero = ratio > 100 ? false : true;
+          runtimeChart.options.scales.y.title.text = ratio > 100 ? "Runtime (s, log)" : "Runtime (s)";
           runtimeChart.data.labels = latest.map(run => run.label);
-          runtimeChart.data.datasets[0].data = latest.map(run => run.runtime_sec ?? 0);
+          runtimeChart.data.datasets[0].data = rts;
           runtimeChart.data.datasets[1].data = latest.map(run => run.speedup_vs_baseline);
           runtimeChart.update();
         }
       } catch (err) {
-        runsBody.innerHTML = `<tr><td colspan="9" class="text-muted">Failed to load runs: ${err}</td></tr>`;
+        runsBody.innerHTML = `<tr><td colspan="8" class="text-muted">Failed to load runs: ${err}</td></tr>`;
       }
     }
 

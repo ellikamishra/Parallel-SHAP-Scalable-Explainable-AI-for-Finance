@@ -6,6 +6,21 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from .models import Run
 from .benchmark import run_benchmark, hardware_info
 from pathlib import Path
+import logging
+import traceback
+import threading
+
+# Serialize benchmark runs so overlapping submissions don't fight for CPU
+# and inflate each other's runtimes. Rows are written with runtime_sec=0
+# until the worker actually starts; the UI reads that as "queued".
+_BENCH_LOCK = threading.Lock()
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Parallel-SHAP Bench")
 ENGINE = create_engine(f"sqlite:///{Path(__file__).with_name('db.sqlite3')}")
@@ -37,31 +52,59 @@ def benchmark(
     P = int(P_raw)
     threads = _parse_optional_int(threads_raw)
     N = _parse_optional_int(N_raw)
-    # create placeholder row
+    
+    logger.info(f"New benchmark request: backend={backend}, P={P}, threads={threads}, N={N}")
+    
+    # Create placeholder row
     with Session(ENGINE) as s:
         run = Run(
-            label=label, backend=backend, dataset_name=dataset_name,
+            label=label, 
+            backend=backend, 
+            dataset_name=dataset_name,
             params={"P": P, "threads": threads, "N": N},
-            hardware=hardware_info(), runtime_sec=0.0
+            hardware=hardware_info(), 
+            runtime_sec=0.0
         )
-        s.add(run); s.commit(); s.refresh(run)
+        s.add(run)
+        s.commit()
+        s.refresh(run)
         run_id = run.id
+    
+    logger.info(f"Created run ID {run_id}, starting background task...")
 
     def worker():
         try:
-            rt, speedup, corr = run_benchmark(backend, P, N, threads, dataset_name)
+            logger.info(f"[Run {run_id}] Waiting for bench lock...")
+            with _BENCH_LOCK:
+                logger.info(f"[Run {run_id}] Starting benchmark execution...")
+                rt, speedup, corr = run_benchmark(backend, P, N, threads, dataset_name)
+            logger.info(f"[Run {run_id}] Completed: runtime={rt:.4f}s, speedup={speedup:.2f}x, corr={corr:.4f}")
+            
             with Session(ENGINE) as s:
                 r = s.get(Run, run_id)
-                r.runtime_sec = float(rt)
-                r.speedup_vs_baseline = float(speedup)
-                r.fidelity_corr = float(corr) if corr is not None else None
-                r.notes = notes
-                s.add(r); s.commit()
+                if r:  # Safety check
+                    r.runtime_sec = float(rt)
+                    r.speedup_vs_baseline = float(speedup)
+                    r.fidelity_corr = float(corr) if corr is not None else None
+                    r.notes = notes
+                    s.add(r)
+                    s.commit()
+                    logger.info(f"[Run {run_id}] Results saved to database")
+                else:
+                    logger.error(f"[Run {run_id}] Run not found in database!")
+                    
         except Exception as e:
+            error_msg = f"ERROR: {str(e)}"
+            logger.error(f"[Run {run_id}] {error_msg}")
+            logger.error(f"[Run {run_id}] Traceback: {traceback.format_exc()}")
+            
             with Session(ENGINE) as s:
                 r = s.get(Run, run_id)
-                r.notes = f"ERROR: {e}"
-                s.add(r); s.commit()
+                if r:
+                    r.notes = error_msg
+                    r.runtime_sec = 0.0  # Mark as failed
+                    s.add(r)
+                    s.commit()
 
     bg.add_task(worker)
     return {"run_id": run_id, "status": "queued"}
@@ -79,3 +122,19 @@ def get_run(run_id: int):
         if not row:
             raise HTTPException(404, "Run not found")
         return row
+
+@app.delete("/runs/{run_id}")
+def delete_run(run_id: int):
+    """Delete a run"""
+    with Session(ENGINE) as s:
+        row = s.get(Run, run_id)
+        if not row:
+            raise HTTPException(404, "Run not found")
+        s.delete(row)
+        s.commit()
+    return {"status": "deleted"}
+
+@app.get("/health")
+def health():
+    """Health check endpoint"""
+    return {"status": "ok", "hardware": hardware_info()}
